@@ -2738,7 +2738,17 @@ if opts['action'] == 'run':
 for tst in test_classes.values():
     tst.available()
 
+orig_hugepages = ""
+with open("/proc/sys/vm/nr_hugepages", "r") as f:
+    orig_hugepages = f.read()
+
+with open("/proc/sys/vm/nr_hugepages", "w") as f:
+    f.write("20\n")
+
 opts['action'](opts)
+
+with open("/proc/sys/vm/nr_hugepages", "w") as f:
+    f.write(orig_hugepages)
 
 for tst in test_classes.values():
     tst.cleanup()
