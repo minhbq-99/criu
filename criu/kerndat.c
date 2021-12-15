@@ -183,20 +183,12 @@ static int kerndat_files_stat(void)
 	return 0;
 }
 
-static int kerndat_get_shmemdev(void)
+static int kerndat_get_dev(dev_t *dev, char *map, size_t size)
 {
-	void *map;
 	char maps[128];
 	struct stat buf;
-	dev_t dev;
 
-	map = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, 0, 0);
-	if (map == MAP_FAILED) {
-		pr_perror("Can't mmap memory for shmemdev test");
-		return -1;
-	}
-
-	sprintf(maps, "/proc/self/map_files/%lx-%lx", (unsigned long)map, (unsigned long)map + page_size());
+	sprintf(maps, "/proc/self/map_files/%lx-%lx", (unsigned long)map, (unsigned long)map + size);
 	if (stat(maps, &buf) < 0) {
 		int e = errno;
 		if (errno == EPERM) {
@@ -205,16 +197,33 @@ static int kerndat_get_shmemdev(void)
 			 * OK, let's go the slower route.
 			 */
 
-			if (parse_self_maps((unsigned long)map, &dev) < 0) {
+			if (parse_self_maps((unsigned long)map, dev) < 0) {
 				pr_err("Can't read self maps\n");
-				goto err;
+				return -1;
 			}
 		} else {
 			pr_perror("Can't stat self map_files %d", e);
-			goto err;
+			return -1;
 		}
 	} else
-		dev = buf.st_dev;
+		*dev = buf.st_dev;
+
+	return 0;
+}
+
+static int kerndat_get_shmemdev(void)
+{
+	void *map;
+	dev_t dev;
+
+	map = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, 0, 0);
+	if (map == MAP_FAILED) {
+		pr_perror("Can't mmap memory for shmemdev test");
+		return -1;
+	}
+
+	if (kerndat_get_dev(&dev, map, PAGE_SIZE))
+		goto err;
 
 	munmap(map, PAGE_SIZE);
 	kdat.shmem_dev = dev;
@@ -224,6 +233,60 @@ static int kerndat_get_shmemdev(void)
 err:
 	munmap(map, PAGE_SIZE);
 	return -1;
+}
+
+/* Return -1 -- error
+ * Return 0 -- successful but can't get any new device's numbers
+ * Return 1 -- successful and get new device's numbers
+ *
+ * At first, all kdat.hugetlb_dev elements are initialized to 0.
+ * When the function finishes,
+ * kdat.hugetlb_dev[i] == -1 -- this hugetlb page size is not supported
+ * kdat.hugetlb_dev[i] == 0  -- this hugetlb page size is supported but can't collect device's number
+ * Otherwise, kdat.hugetlb_dev[i] contains the corresponding device's number
+ *
+ * Next time the function is called, it only tries to collect the device's number of hugetlb page size
+ * that is supported but can't be collected in the previous call (kdat.hugetlb_dev[i] == 0)
+ */
+static int kerndat_get_hugetlb_dev(void)
+{
+	void *map;
+	int i, flag, ret = 0;
+	unsigned long long size;
+	dev_t dev;
+
+	for (i = 0; i < HUGETLB_MAX; i++) {
+		/* Skip if this hugetlb size is not supported or the device's number has been collected */
+		if (kdat.hugetlb_dev[i])
+			continue;
+
+		size = hugetlb_info[i].size;
+		flag = hugetlb_info[i].flag;
+		map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | flag, 0, 0);
+		if (map == MAP_FAILED) {
+			if (errno == EINVAL) {
+				kdat.hugetlb_dev[i] = (dev_t)-1;
+				continue;
+			} else if (errno == ENOMEM) {
+				pr_info("Hugetlb size %llu Mb is supported but cannot get dev's number\n", size >> 20);
+				continue;
+			} else {
+				pr_perror("Unexpected result when get hugetlb dev");
+				return -1;
+			}
+		}
+
+		if (kerndat_get_dev(&dev, map, size)) {
+			munmap(map, size);
+			return -1;
+		}
+
+		munmap(map, size);
+		kdat.hugetlb_dev[i] = dev;
+		ret = 1;
+		pr_info("Found hugetlb device at %" PRIx64 "\n", kdat.hugetlb_dev[i]);
+	}
+	return ret;
 }
 
 static dev_t get_host_dev(unsigned int which)
@@ -1265,8 +1328,25 @@ int kerndat_init(void)
 	int ret;
 
 	ret = kerndat_try_load_cache();
-	if (ret <= 0)
+	if (ret < 0)
 		return ret;
+
+	/* The hugetlb page can be allocated more at the OS runtime.
+	 * The hugetlb size that we failed to get device's number
+	 * before can be available now and may be used in the
+	 * checkpointed process.
+	 * Try to get the missing hugetlb device's numbers.
+	 */
+	if (ret == 0) {
+		ret = kerndat_get_hugetlb_dev();
+		/* Update the new hugetlb device's number we just find out */
+		if (ret == 1) {
+			kerndat_save_cache();
+			ret = 0;
+		}
+		return ret;
+	}
+
 	ret = 0;
 
 	/* kerndat_try_load_cache can leave some trash in kdat */
@@ -1281,6 +1361,10 @@ int kerndat_init(void)
 	}
 	if (!ret && kerndat_get_shmemdev()) {
 		pr_err("kerndat_get_shmemdev failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_get_hugetlb_dev() < 0) {
+		pr_err("kerndat_get_hugetlb_dev failed when initializing kerndat.\n");
 		ret = -1;
 	}
 	if (!ret && kerndat_get_dirty_track()) {
