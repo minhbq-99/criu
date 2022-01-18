@@ -853,6 +853,15 @@ static int premap_private_vma(struct pstree_item *t, struct vma_area *vma, void 
 			}
 		}
 
+		if (vma->e->flags & MAP_HUGETLB) {
+			void *addr = *tgt_addr;
+			unsigned long huge_size = get_size_from_hugetlb_flag(vma->e->flags & MAP_HUGETLB_SIZE_MASK);
+
+			/* Aligned the premapped address to the hugetlb size and unmap unused area */
+			*tgt_addr = (void *)((unsigned long)(addr + huge_size - 1) & ~(huge_size - 1));
+			munmap(addr, *tgt_addr - addr);
+		}
+
 		/*
 		 * All mappings here get PROT_WRITE regardless of whether we
 		 * put any data into it or not, because this area will get
@@ -1290,6 +1299,12 @@ int prepare_mappings(struct pstree_item *t)
 			pr_perror("Unable to unmap %p(%lx)", addr, tail);
 		rsti(t)->premmapped_len = old_premmapped_len;
 		pr_info("Shrunk premap area to %p(%lx)\n", rsti(t)->premmapped_addr, rsti(t)->premmapped_len);
+	} else {
+		/* The premapped area may contain holes due to hugetlb alignment
+		 * so the premmapped_len can be larger than the total size of
+		 * private mappings.
+		 */
+		rsti(t)->premmapped_len = old_premmapped_len;
 	}
 
 out:
