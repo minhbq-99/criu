@@ -30,6 +30,12 @@ enum loginuid_func {
 	LUID_FULL,
 };
 
+enum ext_bool {
+	NOT_DETERMINED,
+	EXT_FALSE,
+	EXT_TRUE,
+}
+
 struct kerndat_s {
 	u32 magic1, magic2;
 	dev_t shmem_dev;
@@ -78,6 +84,7 @@ struct kerndat_s {
 	bool has_nftables_concat;
 	bool has_sockopt_buf_lock;
 	dev_t hugetlb_dev[HUGETLB_MAX];
+	enum ext_bool has_uffd_hugetlb;
 };
 
 extern struct kerndat_s kdat;
