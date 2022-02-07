@@ -1323,6 +1323,33 @@ static int kerndat_has_nftables_concat(void)
 #endif
 }
 
+/*
+ * Some features depend on resource that can be dynamically changed
+ * at the OS runtime. There are cases that we cannot determine the
+ * availability of those features at the first time we run kerndat
+ * check. So in later kerndat checks, we need to retry to get those
+ * information. This function contains calls to those kerndat checks.
+ *
+ * Those kerndat checks must
+ * Return -1 on error
+ * Return 0 when the check is successful but no new information
+ * Return 1 when the check is successful and there is new information
+ */
+int kerndat_try_load_new(void)
+{
+	int ret, has_new_data = 0;
+
+	ret = kerndat_get_hugetlb_dev();
+	if (ret < 0)
+		return ret;
+	has_new_data |= ret;
+
+	/* New information is found, we need to save to the cache */
+	if (has_new_data)
+		kerndat_save_cache();
+	return 0;
+}
+
 int kerndat_init(void)
 {
 	int ret;
@@ -1331,21 +1358,8 @@ int kerndat_init(void)
 	if (ret < 0)
 		return ret;
 
-	/* The hugetlb page can be allocated more at the OS runtime.
-	 * The hugetlb size that we failed to get device's number
-	 * before can be available now and may be used in the
-	 * checkpointed process.
-	 * Try to get the missing hugetlb device's numbers.
-	 */
-	if (ret == 0) {
-		ret = kerndat_get_hugetlb_dev();
-		/* Update the new hugetlb device's number we just find out */
-		if (ret == 1) {
-			kerndat_save_cache();
-			ret = 0;
-		}
-		return ret;
-	}
+	if (ret == 0)
+		return kerndat_try_load_new();
 
 	ret = 0;
 
