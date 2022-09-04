@@ -33,6 +33,12 @@ static const char *____criu_global_props____[] = {
 	"notify_on_release",
 	"cgroup.procs",
 	"tasks",
+	/* cgroup2 global properties */
+	"cgroup.subtree_control",
+	"cgroup.max.descendants",
+	"cgroup.max.depth",
+	"cgroup.freeze",
+	"cgroup.type",
 };
 
 cgp_t cgp_global = {
